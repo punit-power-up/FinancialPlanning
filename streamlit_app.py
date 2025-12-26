@@ -2,6 +2,8 @@ import streamlit as st #type:ignore
 import pandas as pd
 from datetime import datetime
 import main as logic
+import io
+import zipfile
 
 def main():
 
@@ -242,6 +244,33 @@ def main():
                     
                     st.subheader("Daily Corpus Value")
                     st.line_chart(daily_corpus_value_df, x='Date', y='current_value')
+
+                    st.divider()
+
+                    # Create zip file in memory
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w') as zf:
+                        # Helper to add df to zip
+                        def add_df_to_zip(df, name):
+                            csv_data = df.to_csv(index=False).encode('utf-8')
+                            zf.writestr(f"{name}.csv", csv_data)
+
+                        add_df_to_zip(daily_corpus_value_df, "daily_corpus_value")
+                        add_df_to_zip(final_trans_df, "final_trans_df")
+                        add_df_to_zip(data.get('nav_df', pd.DataFrame()), "nav_df")
+                        add_df_to_zip(data.get('sip_df', pd.DataFrame()), "sip_df")
+                        add_df_to_zip(data.get('sip_trans_df', pd.DataFrame()), "sip_trans_df")
+                        add_df_to_zip(data.get('withdrawls_df', pd.DataFrame()), "withdrawls_df")
+                        
+                        for goal_name, goal_df in goal_dfs.items():
+                             add_df_to_zip(goal_df, f"goal_{goal_name}")
+                    
+                    st.download_button(
+                        label="Download All Data (ZIP)",
+                        data=zip_buffer.getvalue(),
+                        file_name="simulation_results.zip",
+                        mime="application/zip"
+                    )
 
                 else:
                     st.error('Goals could not be met')
