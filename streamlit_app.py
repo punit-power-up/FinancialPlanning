@@ -276,13 +276,13 @@ def main():
                     st.error('Goals could not be met')
                     st.header(f"Cashflows started going negative on {success_metrics['simulation_broke_date'].strftime('%d-%b-%Y')}")
 
-                st.subheader('Cashflows in core corpus:')
-                st.dataframe(final_trans_df)
+                # st.subheader('Cashflows in core corpus:')
+                # st.dataframe(final_trans_df)
 
-                st.subheader('Goal wise cashflows:')
-                for goal_name, goal_df in goal_dfs.items():
-                    st.write(goal_name)
-                    st.dataframe(goal_df)
+                # st.subheader('Goal wise cashflows:')
+                # for goal_name, goal_df in goal_dfs.items():
+                #     st.write(goal_name)
+                #     st.dataframe(goal_df)
 
 if __name__ == "__main__":
     main()
