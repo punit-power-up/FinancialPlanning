@@ -4,6 +4,33 @@ from datetime import datetime
 import main as logic
 import io
 import zipfile
+from dateutil.relativedelta import relativedelta
+
+def calculate_emi(pv, start_date, end_date, interest_rate, inflation_rate, current_date):
+    # Calculate years to start (from current date to start date)
+    years_to_start = (start_date - current_date).days / 365.25
+    if years_to_start < 0: years_to_start = 0
+    
+    # Future Value of Loan Amount at Start Date
+    fv_principal = pv * ((1 + inflation_rate/100) ** years_to_start)
+    
+    # Tenure in months
+    delta = relativedelta(end_date, start_date)
+    tenure_months = delta.years * 12 + delta.months
+    
+    if tenure_months <= 0:
+        return 0
+    
+    # Monthly Interest Rate
+    r = interest_rate / 12 / 100
+    
+    if r == 0:
+        return fv_principal / tenure_months
+        
+    # EMI Formula
+    emi = fv_principal * r * ((1 + r) ** tenure_months) / (((1 + r) ** tenure_months) - 1)
+    
+    return round(emi)
 
 def main():
 
@@ -16,6 +43,10 @@ def main():
         st.session_state.goals = []
     if 'effects' not in st.session_state:
         st.session_state.effects = []
+    if 'custom_glide_paths' not in st.session_state:
+        st.session_state.custom_glide_paths = {}
+    if 'standard_glide_paths' not in st.session_state:
+        st.session_state.standard_glide_paths = logic.get_default_glide_paths()
 
     # Section 1: Basic Information
     st.header("📊 Basic Information")
@@ -32,7 +63,247 @@ def main():
 
     st.divider()
 
-    # Section 2: Financial Goals
+    # Section 2: Custom Glide Paths
+    st.header("🛠️ Custom Glide Paths")
+    
+    with st.expander("Create New Glide Path"):
+        gp_name = st.text_input("Glide Path Name", key="new_gp_name")
+        
+        if 'builder_buckets' not in st.session_state:
+            st.session_state.builder_buckets = []
+            
+        if st.button("➕ Add Goal Value Bucket"):
+            st.session_state.builder_buckets.append({
+                'id': len(st.session_state.builder_buckets),
+                'percent': 10.0,
+                'steps': []
+            })
+            st.rerun()
+
+        buckets_to_remove = []
+        for i, bucket in enumerate(st.session_state.builder_buckets):
+            # Collapsed by default unless it's the last one (likely being edited)
+            is_expanded = (i == len(st.session_state.builder_buckets) - 1)
+            
+            with st.expander(f"Bucket {i+1} ({bucket['percent']}%)", expanded=is_expanded):
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    bucket['percent'] = st.number_input(f"Percentage of Goal Value (%)", value=bucket['percent'], key=f"bucket_pct_{i}", label_visibility="collapsed")
+                with col2:
+                    if st.button("🗑️ Bucket", key=f"del_bucket_{i}"):
+                        buckets_to_remove.append(i)
+                
+                # Steps
+                if st.button(f"➕ Add Step", key=f"add_step_{i}"):
+                    bucket['steps'].append({'instrument': 'debt', 'years': 0})
+                    st.rerun()
+                    
+                steps_to_remove = []
+                if bucket['steps']:
+                    st.caption("Steps (Ordered by Years before maturity)")
+                    for j, step in enumerate(bucket['steps']):
+                        c1, c2, c3 = st.columns([2, 2, 1])
+                        with c1:
+                            step['instrument'] = st.selectbox(f"Instrument", options=['hybrid', 'debt'], index=0 if step['instrument']=='hybrid' else 1, key=f"step_inst_{i}_{j}", label_visibility="collapsed")
+                        with c2:
+                            step['years'] = st.number_input(f"Years Before Maturity", value=step['years'], min_value=0, step=1, key=f"step_years_{i}_{j}", label_visibility="collapsed")
+                        with c3:
+                            if st.button("🗑️", key=f"del_step_{i}_{j}"):
+                                steps_to_remove.append(j)
+                
+                for index in sorted(steps_to_remove, reverse=True):
+                    bucket['steps'].pop(index)
+
+        for index in sorted(buckets_to_remove, reverse=True):
+            st.session_state.builder_buckets.pop(index)
+            st.rerun()
+
+        if st.button("💾 Save Custom Glide Path", type="primary"):
+            total_percent = sum(b['percent'] for b in st.session_state.builder_buckets)
+
+            if not gp_name:
+                st.error("Please provide a name.")
+            elif not st.session_state.builder_buckets:
+                st.error("Please add at least one bucket.")
+            elif abs(total_percent - 100.0) > 0.01:
+                st.error(f"Total percentage must be 100%. Current total: {total_percent}%")
+            else:
+                # Logic to convert builder to DataFrame
+                rows = []
+                row_id_counter = 1
+                
+                valid = True
+                for bucket in st.session_state.builder_buckets:
+                    if not bucket['steps']:
+                        st.error("Every bucket must have at least one step.")
+                        valid = False
+                        break
+                    
+                    # Sort steps by years ascending (closest to goal first? No, we want logical flow)
+                    # We decided: Steps are "Start Year".
+                    # Step 1: Debt, 2 years. Means 2 years before end.
+                    # Step 2: Hybrid, 10 years. Means 10 years before end.
+                    # Flow: Core -> Hybrid (at 10) -> Debt (at 2) -> Goal (at 0).
+                    # So we process steps in ASCENDING order of years (smallest first).
+                    # Smallest year (e.g. 2) connects to Goal (0).
+                    # Next smallest (e.g. 10) connects to Previous (2).
+                    
+                    sorted_steps = sorted(bucket['steps'], key=lambda x: x['years'])
+                    
+                    # Ensure strictly increasing if desired, or at least distinct.
+                    # 0 years is valid? 0 years before maturity is maturity.
+                    # If step year is 0, it means it IS the goal? No.
+                    # It means it starts at 0 years before. But goal is at 0.
+                    # So duration is 0? That's useless.
+                    # Validation: Years should be > 0.
+                    
+                    previous_node_id = None
+                    last_start_year = 0
+                    
+                    # Create Goal Row first?
+                    # No, goal row is the sink.
+                    # In existing logic, 'inflow_from' points to source.
+                    # So we need Source ID.
+                    
+                    # Let's generate IDs for steps first.
+                    # But we need to link them.
+                    
+                    # Let's build the chain.
+                    # Chain: Core -> Step N -> ... -> Step 1 -> Goal
+                    
+                    # Step N is the one with LARGEST start year.
+                    # Step 1 is the one with SMALLEST start year.
+                    
+                    # Let's iterate reversed sorted steps (Largest to Smallest).
+                    reverse_sorted = sorted(bucket['steps'], key=lambda x: x['years'], reverse=True)
+                    
+                    current_source = 'core corpus'
+                    
+                    for k, step in enumerate(reverse_sorted):
+                        # Create row for this step
+                        step_row = {
+                            'id': row_id_counter,
+                            'place': step['instrument'],
+                            'years from inflow till end': step['years'],
+                            'years from outflow till end': 0 if k == len(reverse_sorted) - 1 else reverse_sorted[k+1]['years'], # Outflow to next step (which has smaller year) or 0 (Goal)
+                            'inflow_from': current_source,
+                            # outflow_to is ID of next step... wait.
+                            # The dataframe has 'outflow_to' but `process_chain` uses `inflow_from`.
+                            # `main.py` logic traces BACKWARDS from goal.
+                            # So Goal.inflow_from = Step1_ID.
+                            # Step1.inflow_from = Step2_ID.
+                            # StepN.inflow_from = 'core corpus'.
+                            
+                            # So I need the IDs of these steps.
+                        }
+                        # Wait, I can't know inflow_from if I haven't created the source yet?
+                        # No, if source is core corpus, I know it.
+                        # If source is previous step, I know its ID if I created it.
+                        
+                        # So iterate from Furthest (Core source) to Closest (Goal source).
+                        # Correct.
+                        pass # Placeholder logic check
+                    
+                    # Let's do it properly.
+                    # Sort steps Descending (High year to Low year).
+                    # Example: Hybrid (10), Debt (2).
+                    
+                    # Step A: Hybrid (10). Source: Core.
+                    # Step B: Debt (2). Source: Step A.
+                    # Goal. Source: Step B.
+                    
+                    chain_ids = []
+                    
+                    sorted_desc = sorted(bucket['steps'], key=lambda x: x['years'], reverse=True)
+                    
+                    last_id = 'core corpus' # Start source
+                    
+                    for step in sorted_desc:
+                        current_id = row_id_counter
+                        row_id_counter += 1
+                        
+                        # Calculate outflow year (next step's inflow year, or 0 if last)
+                        # Actually we don't strictly need 'outflow_to' or 'years from outflow' for logic?
+                        # main.py logic:
+                        # process_chain navigates via `inflow_from`.
+                        # It calculates `years = (outflow_date - inflow_date)`.
+                        # `outflow_date` is `current_row['inflow_date']` (i.e. the node that pulled from this source).
+                        # So `years from outflow till end` in the excel seems to be for documentation or validation, `main.py` line 29 calculates `outflow_date` but line 86 uses `current_row['inflow_date']` as the outflow date of the source.
+                        # Wait, line 86: `outflow_date = current_row['inflow_date']`.
+                        # `current_row` is the receiver. `source_row` is the provider.
+                        # Provider's outflow date IS receiver's inflow date.
+                        # So we just need to set up `inflow_from` links correctly.
+                        
+                        # However, for `years from outflow till end`, let's populate it for consistency.
+                        # If this is Step A (High Year), its outflow is Step B (Low Year).
+                        # If this is Step Last (Lowest Year), its outflow is Goal (0 Year).
+                        
+                        # But wait, `main.py` line 29: df['outflow_date'] = ... years from outflow till end.
+                        # Is `outflow_date` used?
+                        # Line 133: `if pd.notna(row['outflow_date']):` - used for calculation of growth/tax in INTERMEDIATE steps (not goal).
+                        # Yes! `process_chain` sets `inflow_amount` on source.
+                        # Later (line 119+), `df.iterrows()` calculates growth on non-goal rows using `outflow_date`.
+                        # So `years from outflow till end` IS CRITICAL.
+                        
+                        # So:
+                        # Step A (10): Outflow year = Step B's inflow year (2).
+                        # Step B (2): Outflow year = Goal's inflow year (0).
+                        
+                        rows.append({
+                            'id': current_id,
+                            'place': step['instrument'],
+                            'years from inflow till end': step['years'],
+                            'years from outflow till end': 0 if step == sorted_desc[-1] else 0, # To be filled?
+                            # 'years from outflow till end' needs to be the inflow year of the NEXT step in the chain (closer to goal).
+                            'inflow_from': last_id,
+                            'outflow_to': 0, # Placeholder
+                            '% of goal value': bucket['percent'] # Optional, only needed for goal row
+                        })
+                        chain_ids.append(current_id)
+                        last_id = current_id
+                    
+                    # Post-process to fix 'years from outflow' and 'outflow_to'
+                    for k in range(len(chain_ids)):
+                        curr_idx = len(rows) - len(chain_ids) + k
+                        # If not last step
+                        if k < len(chain_ids) - 1:
+                            next_id = chain_ids[k+1]
+                            # Next step in list is the one Closest to goal (next in iteration was closer).
+                            # Wait, sorted_desc is Furthest -> Closest.
+                            # So chain_ids[0] is Furthest.
+                            # chain_ids[1] is Closer.
+                            # Step 0 flows to Step 1.
+                            rows[curr_idx]['outflow_to'] = chain_ids[k+1]
+                            rows[curr_idx]['years from outflow till end'] = rows[curr_idx+1]['years from inflow till end']
+                        else:
+                            # Last step flows to Goal
+                            # Goal inflow year is 0.
+                            rows[curr_idx]['outflow_to'] = 'Goal' # placeholder logic
+                            rows[curr_idx]['years from outflow till end'] = 0
+                            
+                    # Create Goal Row
+                    goal_id = row_id_counter
+                    row_id_counter += 1
+                    rows.append({
+                        'id': goal_id,
+                        'place': 'goal',
+                        'years from inflow till end': 0,
+                        'years from outflow till end': pd.NA,
+                        'inflow_from': last_id, # The last step ID
+                        'outflow_to': pd.NA,
+                        '% of goal value': bucket['percent']
+                    })
+                
+                if valid:
+                    # Create DataFrame
+                    df_custom = pd.DataFrame(rows)
+                    # df_custom.to_excel('Custom Glide Paths.xlsx', sheet_name=gp_name, index=False)
+                    st.session_state.custom_glide_paths[gp_name] = df_custom
+                    st.success(f"Created Glide Path: {gp_name}")
+                    st.session_state.builder_buckets = [] # Reset
+                    st.rerun()
+
+    # Section 2.5: Financial Goals
     st.header("🎯 Financial Goals")
 
     col1, col2 = st.columns([3, 1])
@@ -70,10 +341,13 @@ def main():
                     )
                 
                 with col2:
+                    gp_options = list(st.session_state.standard_glide_paths.keys()) + list(st.session_state.custom_glide_paths.keys())
+                    current_type = goal['type'] if goal['type'] in gp_options else gp_options[0]
+                    
                     goal['type'] = st.selectbox(
                         "Goal Type", 
-                        options=['Non-Negotiable', 'Negotiable', 'Semi-Negotiable'],
-                        index=['Non-Negotiable', 'Negotiable', 'Semi-Negotiable'].index(goal['type']),
+                        options=gp_options,
+                        index=gp_options.index(current_type),
                         key=f"goal_type_{i}"
                     )
                     goal['rate_for_future_value'] = st.number_input(
@@ -105,9 +379,13 @@ def main():
         if st.button("➕ Add Cashflow Effect", use_container_width=True):
             st.session_state.effects.append({
                 'id': len(st.session_state.effects),
+                'type': 'Manual', # Default
                 'start_date': datetime(2030, 1, 1),
                 'end_date': datetime(2050, 1, 1),
-                'monthly_amount': -30000
+                'monthly_amount': -30000,
+                'pv': 5000000,
+                'interest_rate': 8.5,
+                'inflation_rate': 6.0
             })
             st.rerun()
 
@@ -116,38 +394,88 @@ def main():
     else:
         for i, effect in enumerate(st.session_state.effects):
             with st.expander(f"Cashflow Effect {i+1}", expanded=True):
-                col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+                # Ensure keys exist for backward compatibility
+                effect.setdefault('type', 'Manual')
                 
-                with col1:
-                    effect['start_date'] = st.date_input(
-                        "Start Date", 
-                        value=effect['start_date'],
-                        min_value=pd.Timestamp(1900, 1, 1),
-                        max_value=pd.Timestamp(2200, 12, 31),
-                        key=f"effect_start_{i}"
+                type_col, _ = st.columns([1, 3])
+                with type_col:
+                    effect['type'] = st.selectbox("Type", ["Manual", "Loan EMI"], key=f"effect_type_{i}")
+                
+                if effect['type'] == "Manual":
+                    col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+                    
+                    with col1:
+                        effect['start_date'] = st.date_input(
+                            "Start Date", 
+                            value=effect['start_date'],
+                            min_value=pd.Timestamp(1900, 1, 1),
+                            max_value=pd.Timestamp(2200, 12, 31),
+                            key=f"effect_start_{i}"
+                        )
+                    
+                    with col2:
+                        effect['end_date'] = st.date_input(
+                            "End Date", 
+                            value=effect['end_date'],
+                            min_value=pd.Timestamp(1900, 1, 1),
+                            max_value=pd.Timestamp(2200, 12, 31),
+                            key=f"effect_end_{i}"
+                        )
+                    
+                    with col3:
+                        effect['monthly_amount'] = st.number_input(
+                            "Monthly Amount (₹)", 
+                            value=int(effect['monthly_amount']),
+                            step=1000,
+                            key=f"effect_amount_{i}",
+                            help="Use negative values for outflow"
+                        )
+                    
+                    with col4:
+                        st.write("")  # Spacing
+                        if st.button("🗑️ Remove", key=f"remove_effect_{i}", use_container_width=True):
+                            st.session_state.effects.pop(i)
+                            st.rerun()
+                            
+                else: # Loan EMI
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        effect.setdefault('pv', 5000000)
+                        effect['pv'] = st.number_input("Loan Amount (PV)", value=effect['pv'], step=100000, key=f"eff_pv_{i}")
+                    with c2:
+                        effect.setdefault('interest_rate', 8.5)
+                        effect['interest_rate'] = st.number_input("Loan Interest (%)", value=effect['interest_rate'], step=0.1, key=f"eff_int_{i}")
+                    with c3:
+                        effect.setdefault('inflation_rate', 6.0)
+                        effect['inflation_rate'] = st.number_input("Inflation Rate (%)", value=effect['inflation_rate'], step=0.1, key=f"eff_inf_{i}")
+                        
+                    c4, c5, c6 = st.columns([2, 2, 2])
+                    with c4:
+                        effect['start_date'] = st.date_input("Loan Start Date", value=effect['start_date'], key=f"eff_st_{i}")
+                    with c5:
+                        effect['end_date'] = st.date_input("Loan End Date", value=effect['end_date'], key=f"eff_end_{i}")
+                        
+                    # Calculate EMI
+                    current_date_ts = pd.Timestamp(st.session_state.get('current_date_input', datetime(2025, 12, 23)))
+                    # Need to access current_date from input section. It's properly in 'current_date' variable from line 25 if scope allows?
+                    # Streamlit reruns script top to bottom. `current_date` is defined in main() scope. We are inside main(). So yes.
+                    
+                    calculated_emi = calculate_emi(
+                        effect['pv'], 
+                        pd.Timestamp(effect['start_date']), 
+                        pd.Timestamp(effect['end_date']), 
+                        effect['interest_rate'], 
+                        effect['inflation_rate'], 
+                        pd.Timestamp(current_date)
                     )
-                
-                with col2:
-                    effect['end_date'] = st.date_input(
-                        "End Date", 
-                        value=effect['end_date'],
-                        min_value=pd.Timestamp(1900, 1, 1),
-                        max_value=pd.Timestamp(2200, 12, 31),
-                        key=f"effect_end_{i}"
-                    )
-                
-                with col3:
-                    effect['monthly_amount'] = st.number_input(
-                        "Monthly Amount (₹)", 
-                        value=effect['monthly_amount'],
-                        step=1000,
-                        key=f"effect_amount_{i}",
-                        help="Use negative values for outflow"
-                    )
-                
-                with col4:
-                    st.write("")  # Spacing
-                    if st.button("🗑️ Remove", key=f"remove_effect_{i}", use_container_width=True):
+                    
+                    # Store as negative monthly amount
+                    effect['monthly_amount'] = -calculated_emi
+                    
+                    with c6:
+                        st.metric("Calculated EMI", logic.format_inr(calculated_emi))
+                        
+                    if st.button("🗑️ Remove", key=f"remove_effect_emi_{i}", use_container_width=True):
                         st.session_state.effects.pop(i)
                         st.rerun()
 
@@ -216,8 +544,12 @@ def main():
             'core_corpus': {'return': core_return / 100, 'tax': core_tax / 100}
         }
         
+        # Combine glide paths
+        all_glide_paths = st.session_state.standard_glide_paths.copy()
+        all_glide_paths.update(st.session_state.custom_glide_paths)
+        
         # Run simulation
-        result = logic.run_simulation(input_variables, instrument_params)
+        result = logic.run_simulation(input_variables, instrument_params, glide_paths=all_glide_paths)
         
         if result:
             if result['status'] == 'error':
