@@ -163,6 +163,52 @@ def future_value(present_value, inflation_rate, current_date, future_date):
 
     return round(fv, 2)
 
+def calculate_stepup_occurrences(start_date, end_date, month, day):
+    """
+    Calculate how many times a specific date (month/day) has occurred between start and end dates.
+    
+    Args:
+        start_date: The starting date
+        end_date: The ending date
+        month: Month of the step-up date (1-12)
+        day: Day of the step-up date (1-31)
+    
+    Returns:
+        Number of times the step-up date has occurred
+    """
+    if month is None or day is None:
+        return 0
+    
+    count = 0
+    current_year = start_date.year
+    
+    # Check if we need to start from the next year
+    try:
+        first_stepup = pd.Timestamp(year=current_year, month=int(month), day=int(day))
+    except ValueError:
+        # Invalid date (e.g., Feb 30), skip this year
+        current_year += 1
+        first_stepup = pd.Timestamp(year=current_year, month=int(month), day=int(day))
+    
+    # If the first step-up date is before start_date, start counting from next year
+    if first_stepup < start_date:
+        current_year += 1
+    
+    while True:
+        try:
+            stepup_date = pd.Timestamp(year=current_year, month=int(month), day=int(day))
+            if stepup_date > end_date:
+                break
+            if stepup_date >= start_date:
+                count += 1
+            current_year += 1
+        except ValueError:
+            # Invalid date for this year (e.g., Feb 29 in non-leap year), skip
+            current_year += 1
+            continue
+    
+    return count
+
 def calculate_sip_cashflows(input_variables, last_goal_date):
     # Extract variables
     current_date = input_variables['current_date']
@@ -170,6 +216,11 @@ def calculate_sip_cashflows(input_variables, last_goal_date):
     yearly_step_up = input_variables['yearly_sip_step_up_%'] / 100
     goals = input_variables['goals']
     effects_on_cashflows = input_variables['effects_on_cashflows']
+    
+    # Extract advanced options (with defaults for backward compatibility)
+    stepup_date_month = input_variables.get('stepup_date_month', None)
+    stepup_date_day = input_variables.get('stepup_date_day', None)
+    sip_adjustments = input_variables.get('sip_adjustments', [])
     
     # Find the last maturity date
     last_maturity_date = last_goal_date
@@ -183,13 +234,29 @@ def calculate_sip_cashflows(input_variables, last_goal_date):
     # Calculate SIP amounts with yearly step-up
     sip_amounts = []
     for i, date in enumerate(date_range):
-        # Calculate years elapsed from start
-        months_elapsed = i
-        years_elapsed = months_elapsed // 12
+        # Calculate years elapsed based on step-up method
+        if stepup_date_month is not None and stepup_date_day is not None:
+            # Use custom step-up date
+            years_elapsed = calculate_stepup_occurrences(
+                current_date, date, stepup_date_month, stepup_date_day
+            )
+        else:
+            # Use default method (every 12 months from current date)
+            months_elapsed = i
+            years_elapsed = months_elapsed // 12
         
         # Apply step-up formula: current_sip * (1 + step_up)^years_elapsed
-        sip_amount = current_sip * ((1 + yearly_step_up) ** years_elapsed)
-        sip_amounts.append(sip_amount)
+        base_sip_amount = current_sip * ((1 + yearly_step_up) ** years_elapsed)
+        
+        # Apply period-based percentage adjustments
+        final_sip_amount = base_sip_amount
+        for adjustment in sip_adjustments:
+            if adjustment['start_date'] <= date <= adjustment['end_date']:
+                # Apply percentage (e.g., 150% = 1.5x, 70% = 0.7x)
+                final_sip_amount = base_sip_amount * (adjustment['percentage'] / 100)
+                break  # Apply only the first matching adjustment
+        
+        sip_amounts.append(final_sip_amount)
     
     df['SIP amount'] = sip_amounts
     
@@ -211,8 +278,6 @@ def calculate_sip_cashflows(input_variables, last_goal_date):
     return df
 
 def generate_pseudo_nav(start_date, end_date, rate_of_return):
-    start_date = pd.Timestamp('2000-01-01')
-    end_date = pd.Timestamp('2200-01-01')
     date_range = pd.date_range(start=start_date, end=end_date, freq='D')
     
     annual_rate = rate_of_return
@@ -247,7 +312,11 @@ def create_sip_trans(nav_df, sip_df, input_variables):
     for id, row in sip_df.iterrows():
         amount = row['net sip amount']
         date = row['Date']
-        nav = nav_df[nav_df['Date']<=date]['nav'].iloc[-1]
+        if date >= nav_df['Date'].min() and date <= nav_df['Date'].max():
+            nav = nav_df[nav_df['Date']<=date]['nav'].iloc[-1]
+        else:
+            nav = nav_df['nav'].iloc[-1] if date > nav_df['Date'].max() else nav_df['nav'].iloc[0]
+            
         units = amount / nav
 
         trans.append({
@@ -302,8 +371,19 @@ def add_withdrawls_to_trans(sip_trans_df, withdrawls_df, nav_df, instrument_para
         amount = row['Amount']  # Post-tax amount needed
         date = row['Date']
         description = row['Description']
-        # st.dataframe(nav_df[nav_df['Date']==date]['nav'])
-        current_nav = nav_df[nav_df['Date']==date]['nav'].iloc[-1]
+        
+        # Safe NAV lookup
+        if date < nav_df['Date'].min():
+            current_nav = nav_df['nav'].iloc[0]
+        elif date > nav_df['Date'].max():
+            current_nav = nav_df['nav'].iloc[-1]
+        else:
+            matches = nav_df[nav_df['Date']==date]
+            if not matches.empty:
+                current_nav = matches['nav'].iloc[-1]
+            else:
+                matches_prev = nav_df[nav_df['Date'] < date]
+                current_nav = matches_prev['nav'].iloc[-1] if not matches_prev.empty else nav_df['nav'].iloc[0]
         
         # Filter to only include transactions up to the withdrawal date
         available_trans_df = updated_trans_df[updated_trans_df['Date'] <= date].copy()
@@ -447,6 +527,160 @@ def add_withdrawls_to_trans(sip_trans_df, withdrawls_df, nav_df, instrument_para
         'num_failed_withdrawals': len(failed_withdrawals)
     }
 
+def create_consolidated_df(final_trans_df, goal_dfs, instrument_params, input_variables):
+    
+    # 1. Generate NAVs for all instruments
+    start_date = pd.Timestamp('2000-01-01')
+    end_date = pd.Timestamp('2200-01-01') # Wide range to cover all
+    
+    nav_dfs = {}
+    
+    for instrument, params in instrument_params.items():
+        # returns are in decimal
+        rate = params['return']
+        nav_dfs[instrument] = generate_pseudo_nav(start_date, end_date, rate)
+        
+    def get_nav(instrument, date):
+        # instrument: 'core_corpus', 'debt', 'hybrid', 'goal'
+        # Normalize instrument name
+        inst_key = instrument.lower().replace(' ', '_')
+        if inst_key not in nav_dfs:
+            # Fallback or error? 'goal' return might be 0.
+            # If not found, try to find closest match or default
+            if 'core' in inst_key: inst_key = 'core_corpus'
+            elif 'debt' in inst_key: inst_key = 'debt'
+            elif 'hybrid' in inst_key: inst_key = 'hybrid'
+            else: inst_key = 'goal' # Default to goal (likely cash/0 return)
+            
+        df = nav_dfs.get(inst_key)
+        if df is None: return 10.0 # Should not happen if we init all
+        
+        # Find NAV for date
+        # Assuming df is sorted by Date
+        # Use simple lookup
+        matches = df[df['Date'] <= date]
+        if matches.empty:
+            return 10.0 # Start NAV
+        return matches['nav'].iloc[-1]
+
+    consolidated_rows = []
+    
+    # 2. Process final_trans_df (Core Corpus Transactions)
+    # This includes SIP inflows and Withdrawals for goals
+    for _, row in final_trans_df.iterrows():
+        date = row['Date']
+        amount = row['Amount']
+        desc = row['Description']
+        
+        # Determine Goal Name
+        goal_name = 'General'
+        if 'for' in desc and 'goal' in desc:
+            # Format: "Moving to {place} for {goal_name} goal."
+            # or "For Goal - {name}" (old format check?)
+            # The current withdrawl logic uses: f'Moving to {place} for {name} goal.'
+            try:
+                parts = desc.split(' for ')
+                if len(parts) > 1:
+                    remaining = parts[1] # "{name} goal."
+                    goal_name = remaining.replace(' goal.', '').strip()
+            except:
+                pass
+        
+        # Append to list
+        consolidated_rows.append({
+            'Date': date,
+            'Amount': amount,
+            'NAV': row['NAV'], # Use existing NAV from simulation
+            'units': row['units'],
+            'Description': desc,
+            'Type': 'Inflow' if amount > 0 else 'Outflow',
+            'Instrument': 'Core Corpus',
+            'Goal': goal_name,
+            'Tax': row.get('tax', 0)
+        })
+
+    # 3. Process Goal DFs (Inter-instrument transfers)
+    # Each row in goal_df represents a step.
+    # It has inflow (from source) and potentially outflow (to next step).
+    
+    for goal_name, df in goal_dfs.iterrows() if isinstance(goal_dfs, pd.DataFrame) else goal_dfs.items():
+        # goal_dfs is a dict {name: df}
+        
+        for _, row in df.iterrows():
+            place = row['place'] # 'debt', 'hybrid', 'goal'
+            
+            # Skip 'goal' rows if they are just the final target?
+            # The user wants: "when the money then goes to the final goal ... then also create two entries."
+            # effectively tracking the money into the final bucket.
+            
+            # INFLOW into this instrument
+            # This money comes FROM 'inflow_from' (which could be core corpus or another instrument)
+            # We already have the 'Outflow' from Core Corpus in final_trans_df.
+            # Now we need the 'Inflow' into this instrument.
+            
+            inflow_date = row['inflow_date']
+            inflow_amount = row['inflow_amount']
+            
+            if pd.notna(inflow_date) and inflow_amount > 0:
+                nav = get_nav(place, inflow_date)
+                units = inflow_amount / nav
+                
+                consolidated_rows.append({
+                    'Date': inflow_date,
+                    'Amount': inflow_amount,
+                    'NAV': nav,
+                    'units': units,
+                    'Description': f'Received from {row["inflow_from"]}',
+                    'Type': 'Inflow',
+                    'Instrument': place,
+                    'Goal': goal_name,
+                    'Tax': 0 # Inflow has no tax immediately
+                })
+                
+            # OUTFLOW from this instrument (to next step)
+            # If this is NOT the final goal, it moves somewhere else.
+            # Row has 'total_outflow_amount' and 'tax_out_of_outflow'
+            
+            outflow_date = row['outflow_date']
+            outflow_amount = row['total_outflow_amount'] # This is the GROSS amount before tax? 
+            # Wait, logic in calculate_goal_cashflows:
+            # total_outflow = principal * growth
+            # tax = gains * tax_rate
+            # The actual amount moving to next step is (total_outflow - tax) usually?
+            # But here we are recording the liquidation of the instrument.
+            # We liquidated `total_outflow` worth of value.
+            # Tax is paid from that.
+            # Net amount goes to next step.
+            
+            if pd.notna(outflow_date) and pd.notna(outflow_amount) and outflow_amount > 0:
+                # This is a withdrawal/move
+                nav = get_nav(place, outflow_date)
+                
+                # Re-calculate units from inflow to be sure (since we don't store units in goal_df)
+                in_nav = get_nav(place, inflow_date)
+                units_held = inflow_amount / in_nav
+                
+                # Outflow entry
+                consolidated_rows.append({
+                    'Date': outflow_date,
+                    'Amount': -outflow_amount, # Negative for outflow
+                    'NAV': nav,
+                    'units': -units_held,
+                    'Description': f'Moving to {row.get("outflow_to", "Next Step")}', 
+                    'Type': 'Outflow',
+                    'Instrument': place,
+                    'Goal': goal_name,
+                    'Tax': row['tax_out_of_outflow']
+                })
+
+    consolidated_df = pd.DataFrame(consolidated_rows)
+    if not consolidated_df.empty:
+        # Sort
+        consolidated_df['Date'] = pd.to_datetime(consolidated_df['Date'])
+        consolidated_df = consolidated_df.sort_values(by='Date').reset_index(drop=True)
+    
+    return consolidated_df
+
 def calculate_daily_value(final_trans_df, nav_df):
 
     trans_df = final_trans_df.copy(deep=True)
@@ -500,7 +734,6 @@ def format_inr(amount):
 
     return f"₹{integer}.{decimal}"
 
-
 def run_simulation(input_variables, instrument_params, glide_paths=None):
 
     if not input_variables == None:
@@ -543,6 +776,8 @@ def run_simulation(input_variables, instrument_params, glide_paths=None):
         final_trans_df, success_metrics = add_withdrawls_to_trans(sip_trans_df, withdrawls_df, nav_df, instrument_params)
 
         daily_corpus_value_df = calculate_daily_value(final_trans_df, nav_df)
+        
+        consolidated_trans_df = create_consolidated_df(final_trans_df, goal_dfs, instrument_params, input_variables)
 
         # nav_df.to_excel('test/nav_df.xlsx', index=False)
         # sip_df.to_excel('test/sip_df.xlsx', index=False)
@@ -569,6 +804,7 @@ def run_simulation(input_variables, instrument_params, glide_paths=None):
                 'data': {
                     'daily_corpus_value_df': daily_corpus_value_df,
                     'final_trans_df': final_trans_df,
+                    'consolidated_trans_df': consolidated_trans_df,
                     'goal_dfs': goal_dfs,
                     'success_metrics': success_metrics,
                     'last_goal_date': last_goal_date,
