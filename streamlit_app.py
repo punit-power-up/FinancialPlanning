@@ -5,6 +5,8 @@ import main as logic
 import io
 import zipfile
 from dateutil.relativedelta import relativedelta
+from datetime import date
+
 
 def calculate_emi(pv, start_date, end_date, interest_rate, inflation_rate, current_date):
     # Calculate years to start (from current date to start date)
@@ -47,19 +49,114 @@ def main():
         st.session_state.custom_glide_paths = {}
     if 'standard_glide_paths' not in st.session_state:
         st.session_state.standard_glide_paths = logic.get_default_glide_paths()
+    if 'sip_adjustments' not in st.session_state:
+        st.session_state.sip_adjustments = []
 
     # Section 1: Basic Information
     st.header("📊 Basic Information")
     col1, col2 = st.columns(2)
 
     with col1:
-        current_date = st.date_input("Current Date", value=datetime(2025, 12, 23))
+        # current_date = st.date_input("Current Date", value=datetime(2025, 1, 1))
+        current_date = st.date_input("Current Date", value=date.today())
         current_corpus = st.number_input("Current Corpus (₹)", value=10000000, step=100000)
         yearly_sip_step_up = st.number_input("Yearly SIP Step-up (%)", value=10.0, step=0.1)
 
     with col2:
         current_age = st.number_input("Current Age", value=30, step=1)
         current_sip = st.number_input("Current SIP (₹/month)", value=100000, step=1000)
+
+    st.divider()
+
+    # Section 1.5: Advanced Options
+    st.header("⚙️ Advanced Options")
+    
+    with st.expander("Advanced SIP Adjustments", expanded=False):
+        st.subheader("Custom Yearly Step-Up Date")
+        st.caption("By default, step-up happens every 12 months from the current date. Here you can specify a specific date when yearly step-up should occur.")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            use_custom_stepup = st.checkbox("Use Custom Step-Up Date", value=False, key="use_custom_stepup")
+        
+        if use_custom_stepup:
+            with col1:
+                stepup_month = st.selectbox(
+                    "Step-Up Month",
+                    options=list(range(1, 13)),
+                    format_func=lambda x: pd.Timestamp(2000, x, 1).strftime('%B'),
+                    key="stepup_month"
+                )
+            with col2:
+                stepup_day = st.number_input(
+                    "Step-Up Day",
+                    min_value=1,
+                    max_value=31,
+                    value=1,
+                    step=1,
+                    key="stepup_day"
+                )
+        else:
+            stepup_month = None
+            stepup_day = None
+        
+        st.divider()
+        
+        st.subheader("Period-Based SIP Percentage Adjustments")
+        st.caption("Apply percentage multipliers to SIP amounts for specific periods. For example, 150% means 1.5x the calculated SIP, 70% means 0.7x the SIP.")
+        
+        col1, col2 = st.columns([3, 1])
+        with col2:
+            if st.button("➕ Add Period Adjustment", use_container_width=True):
+                st.session_state.sip_adjustments.append({
+                    'id': len(st.session_state.sip_adjustments),
+                    'start_date': datetime(2030, 1, 1),
+                    'end_date': datetime(2035, 1, 1),
+                    'percentage': 100.0
+                })
+                st.rerun()
+        
+        if len(st.session_state.sip_adjustments) == 0:
+            st.info("No period adjustments added. Click 'Add Period Adjustment' to create one.")
+        else:
+            for i, adj in enumerate(st.session_state.sip_adjustments):
+                with st.expander(f"Adjustment {i+1}: {adj['percentage']}% from {pd.Timestamp(adj['start_date']).strftime('%b %Y')} to {pd.Timestamp(adj['end_date']).strftime('%b %Y')}", expanded=True):
+                    col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+                    
+                    with col1:
+                        adj['start_date'] = st.date_input(
+                            "Start Date",
+                            value=adj['start_date'],
+                            min_value=pd.Timestamp(1900, 1, 1),
+                            max_value=pd.Timestamp(2200, 12, 31),
+                            key=f"adj_start_{i}"
+                        )
+                    
+                    with col2:
+                        adj['end_date'] = st.date_input(
+                            "End Date",
+                            value=adj['end_date'],
+                            min_value=pd.Timestamp(1900, 1, 1),
+                            max_value=pd.Timestamp(2200, 12, 31),
+                            key=f"adj_end_{i}"
+                        )
+                    
+                    with col3:
+                        adj['percentage'] = st.number_input(
+                            "Percentage (%)",
+                            value=float(adj['percentage']),
+                            min_value=0.0,
+                            max_value=1000.0,
+                            step=5.0,
+                            key=f"adj_pct_{i}",
+                            help="100% = no change, 150% = 1.5x SIP, 70% = 0.7x SIP"
+                        )
+                    
+                    with col4:
+                        st.write("")  # Spacing
+                        if st.button("🗑️ Remove", key=f"remove_adj_{i}", use_container_width=True):
+                            st.session_state.sip_adjustments.pop(i)
+                            st.rerun()
 
     st.divider()
 
@@ -313,7 +410,7 @@ def main():
                 'id': len(st.session_state.goals),
                 'name': '',
                 'type': 'Non-Negotiable',
-                'maturity_date': datetime(2040, 3, 5),
+                'maturity_date': datetime(2040, 1, 1),
                 'downpayment_present_value': 5000000,
                 'rate_for_future_value': 6.0
             })
@@ -516,6 +613,16 @@ def main():
             'current_corpus': int(current_corpus),
             'current_sip': int(current_sip),
             'yearly_sip_step_up_%': float(yearly_sip_step_up),
+            'stepup_date_month': stepup_month,
+            'stepup_date_day': stepup_day,
+            'sip_adjustments': [
+                {
+                    'start_date': pd.Timestamp(adj['start_date']),
+                    'end_date': pd.Timestamp(adj['end_date']),
+                    'percentage': float(adj['percentage'])
+                }
+                for adj in st.session_state.sip_adjustments
+            ],
             'goals': [
                 {
                     'name': goal['name'],
@@ -589,6 +696,7 @@ def main():
 
                         add_df_to_zip(daily_corpus_value_df, "daily_corpus_value")
                         add_df_to_zip(final_trans_df, "final_trans_df")
+                        add_df_to_zip(data.get('consolidated_trans_df', pd.DataFrame()), "consolidated_trans_df")
                         add_df_to_zip(data.get('nav_df', pd.DataFrame()), "nav_df")
                         add_df_to_zip(data.get('sip_df', pd.DataFrame()), "sip_df")
                         add_df_to_zip(data.get('sip_trans_df', pd.DataFrame()), "sip_trans_df")
@@ -607,6 +715,7 @@ def main():
                 else:
                     st.error('Goals could not be met')
                     st.header(f"Cashflows started going negative on {success_metrics['simulation_broke_date'].strftime('%d-%b-%Y')}")
+
 
                 # st.subheader('Cashflows in core corpus:')
                 # st.dataframe(final_trans_df)
