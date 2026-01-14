@@ -1,9 +1,9 @@
 import streamlit as st #type:ignore
 import pandas as pd
 from datetime import datetime
-import main as logic
-import io
-import zipfile
+import main_v2 as logic
+# import io
+# import zipfile
 from dateutil.relativedelta import relativedelta
 from datetime import date
 
@@ -40,7 +40,7 @@ def main():
 
     st.title("🎯 Financial Planning")
 
-    # Initialize session state for goals and effects
+    # Initialize session state for goals, effects, and adjustments
     if 'goals' not in st.session_state:
         st.session_state.goals = []
     if 'effects' not in st.session_state:
@@ -51,13 +51,21 @@ def main():
         st.session_state.standard_glide_paths = logic.get_default_glide_paths()
     if 'sip_adjustments' not in st.session_state:
         st.session_state.sip_adjustments = []
+    if 'expense_streams' not in st.session_state:
+        st.session_state.expense_streams = [{
+            'name': 'Living Expenses',
+            'amount': 50000,
+            'frequency': 1,
+            'inflation': 6.0,
+            'post_retirement_change': -15.0,
+            'adjustments': []
+        }]
 
     # Section 1: Basic Information
     st.header("📊 Basic Information")
     col1, col2 = st.columns(2)
 
     with col1:
-        # current_date = st.date_input("Current Date", value=datetime(2025, 1, 1))
         current_date = st.date_input("Current Date", value=date.today())
         current_corpus = st.number_input("Current Corpus (₹)", value=10000000, step=100000)
         yearly_sip_step_up = st.number_input("Yearly SIP Step-up (%)", value=10.0, step=0.1)
@@ -65,96 +73,151 @@ def main():
     with col2:
         current_age = st.number_input("Current Age", value=30, step=1)
         current_sip = st.number_input("Current SIP (₹/month)", value=100000, step=1000)
+        
+    st.divider()
+    
+    # New Section: Expense Streams
+    st.header("💸 Living Expenses & Streams")
+    st.caption("Define multiple streams of expenses (e.g., Household, Travel, Medical) with their own inflation and adjustments.")
+    
+    if st.button("➕ Add Expense Stream"):
+        st.session_state.expense_streams.append({
+            'name': f"Stream {len(st.session_state.expense_streams)+1}",
+            'amount': 20000,
+            'frequency': 1, # Monthly
+            'inflation': 6.0,
+            'post_retirement_change': 0.0,
+            'adjustments': []
+        })
+        st.rerun()
+
+    if len(st.session_state.expense_streams) == 0:
+        st.warning("No expense streams defined. Please add at least one.")
+    
+    streams_to_remove = []
+    
+    def freq_label(f):
+        if f == 1: return "Monthly"
+        if f == 3: return "Quarterly"
+        if f == 6: return "Semi-Annually"
+        if f == 12: return "Yearly"
+        return f"Every {f} Months"
+    
+    for i, stream in enumerate(st.session_state.expense_streams):
+        with st.expander(f"{stream['name']} ({logic.format_inr(stream['amount'])} - {freq_label(stream['frequency'])})", expanded=False):
+            
+            # Row 1: Basic Config
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                stream['name'] = st.text_input(f"Name", value=stream['name'], key=f"s_name_{i}")
+                stream['amount'] = st.number_input(f"Amount (₹)", value=int(stream['amount']), step=1000, key=f"s_amt_{i}")
+            
+            with c2:
+                stream['frequency'] = st.number_input(f"Frequency (Months)", value=int(stream['frequency']), min_value=1, step=1, key=f"s_freq_{i}", help="1=Monthly, 3=Quarterly, 12=Yearly")
+                stream['inflation'] = st.number_input(f"Inflation (%)", value=float(stream['inflation']), step=0.1, key=f"s_inf_{i}")
+                
+            with c3:
+                stream['post_retirement_change'] = st.number_input(f"Step Up after Ret. (%)", value=float(stream['post_retirement_change']), step=1.0, help="Percentage change in expense after retirement (e.g. -15 for reduction, +20 for travel)", key=f"s_prc_{i}")
+                if st.button("🗑️ Delete Stream", key=f"del_stream_{i}"):
+                    streams_to_remove.append(i)
+            
+            # Row 2: Adjustments
+            st.markdown("---")
+            st.caption(f"Adjustments for **{stream['name']}**")
+            
+            if st.button(f"➕ Add Adjustment", key=f"add_adj_{i}"):
+                stream['adjustments'].append({
+                    'start_date': date(2035, 1, 1),
+                    'end_date': date(2040, 1, 1),
+                    'type': 'Multiplier', # Multiplier or Fixed
+                    'value': 100.0
+                })
+                st.rerun()
+                
+            adj_to_remove = []
+            if stream['adjustments']:
+                for j, adj in enumerate(stream['adjustments']):
+                    ac1, ac2, ac3, ac4, ac5 = st.columns([2, 2, 2, 2, 1])
+                    adj.setdefault('type', 'Multiplier')
+                    
+                    with ac1: adj['start_date'] = st.date_input("Start", value=adj['start_date'], key=f"s_{i}_adj_s_{j}", label_visibility="collapsed")
+                    with ac2: adj['end_date'] = st.date_input("End", value=adj['end_date'], key=f"s_{i}_adj_e_{j}", label_visibility="collapsed")
+                    with ac3: adj['type'] = st.selectbox("Type", ["Multiplier", "Fixed Amount"], index=0 if adj['type']=='Multiplier' else 1, key=f"s_{i}_adj_t_{j}", label_visibility="collapsed")
+                    with ac4: 
+                        if adj['type'] == 'Multiplier':
+                            # Show Percentage Input
+                            adj['value'] = st.number_input("%", value=float(adj['value']), step=5.0, key=f"s_{i}_adj_v_{j}", label_visibility="collapsed", help="% Multiplier")
+                        else:
+                            # Show Amount Input
+                            adj['value'] = st.number_input("₹", value=float(adj['value']), step=1000.0, key=f"s_{i}_adj_v_{j}", label_visibility="collapsed", help="Fixed Adjustment Amount (+/-)")
+                            
+                    with ac5: 
+                        if st.button("🗑️", key=f"s_{i}_del_adj_{j}"):
+                            adj_to_remove.append(j)
+                            
+                for idx in sorted(adj_to_remove, reverse=True):
+                    stream['adjustments'].pop(idx)
+                    st.rerun()
+                    
+    for idx in sorted(streams_to_remove, reverse=True):
+        st.session_state.expense_streams.pop(idx)
+        st.rerun()
 
     st.divider()
 
     # Section 1.5: Advanced Options
     st.header("⚙️ Advanced Options")
     
-    with st.expander("Advanced SIP Adjustments", expanded=False):
-        st.subheader("Custom Yearly Step-Up Date")
-        st.caption("By default, step-up happens every 12 months from the current date. Here you can specify a specific date when yearly step-up should occur.")
+    with st.expander("Advanced SIP Settings", expanded=False):
         
-        col1, col2 = st.columns(2)
-        with col1:
-            use_custom_stepup = st.checkbox("Use Custom Step-Up Date", value=False, key="use_custom_stepup")
+        tab1, tab2 = st.tabs(["SIP Step-Up", "SIP Adjustments"])
         
-        if use_custom_stepup:
-            with col1:
-                stepup_month = st.selectbox(
-                    "Step-Up Month",
-                    options=list(range(1, 13)),
-                    format_func=lambda x: pd.Timestamp(2000, x, 1).strftime('%B'),
-                    key="stepup_month"
-                )
-            with col2:
-                stepup_day = st.number_input(
-                    "Step-Up Day",
-                    min_value=1,
-                    max_value=31,
-                    value=1,
-                    step=1,
-                    key="stepup_day"
-                )
-        else:
-            stepup_month = None
-            stepup_day = None
+        with tab1:
+            st.subheader("Custom Yearly Step-Up Date")
+            st.caption("By default, step-up happens every 12 months from the current date. Here you can specify a specific date when yearly step-up should occur.")
+            
+            t1_col1, t1_col2 = st.columns(2)
+            with t1_col1:
+                use_custom_stepup = st.checkbox("Use Custom Step-Up Date", value=False, key="use_custom_stepup")
+            
+            if use_custom_stepup:
+                with t1_col1:
+                    stepup_month = st.selectbox(
+                        "Step-Up Month",
+                        options=list(range(1, 13)),
+                        format_func=lambda x: pd.Timestamp(2000, x, 1).strftime('%B'),
+                        key="stepup_month"
+                    )
+                with t1_col2:
+                    stepup_day = st.number_input(
+                        "Step-Up Day", min_value=1, max_value=31, value=1, step=1, key="stepup_day"
+                    )
+            else:
+                stepup_month = None
+                stepup_day = None
         
-        st.divider()
-        
-        st.subheader("Period-Based SIP Percentage Adjustments")
-        st.caption("Apply percentage multipliers to SIP amounts for specific periods. For example, 150% means 1.5x the calculated SIP, 70% means 0.7x the SIP.")
-        
-        col1, col2 = st.columns([3, 1])
-        with col2:
-            if st.button("➕ Add Period Adjustment", use_container_width=True):
+        with tab2:
+            st.subheader("Period-Based SIP Percentage Adjustments")
+            st.caption("Apply percentage multipliers to SIP amounts for specific periods.")
+            
+            if st.button("➕ Add SIP Adjustment", use_container_width=True):
                 st.session_state.sip_adjustments.append({
-                    'id': len(st.session_state.sip_adjustments),
                     'start_date': datetime(2030, 1, 1),
                     'end_date': datetime(2035, 1, 1),
                     'percentage': 100.0
                 })
                 st.rerun()
-        
-        if len(st.session_state.sip_adjustments) == 0:
-            st.info("No period adjustments added. Click 'Add Period Adjustment' to create one.")
-        else:
-            for i, adj in enumerate(st.session_state.sip_adjustments):
-                with st.expander(f"Adjustment {i+1}: {adj['percentage']}% from {pd.Timestamp(adj['start_date']).strftime('%b %Y')} to {pd.Timestamp(adj['end_date']).strftime('%b %Y')}", expanded=True):
-                    col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
-                    
-                    with col1:
-                        adj['start_date'] = st.date_input(
-                            "Start Date",
-                            value=adj['start_date'],
-                            min_value=pd.Timestamp(1900, 1, 1),
-                            max_value=pd.Timestamp(2200, 12, 31),
-                            key=f"adj_start_{i}"
-                        )
-                    
-                    with col2:
-                        adj['end_date'] = st.date_input(
-                            "End Date",
-                            value=adj['end_date'],
-                            min_value=pd.Timestamp(1900, 1, 1),
-                            max_value=pd.Timestamp(2200, 12, 31),
-                            key=f"adj_end_{i}"
-                        )
-                    
-                    with col3:
-                        adj['percentage'] = st.number_input(
-                            "Percentage (%)",
-                            value=float(adj['percentage']),
-                            min_value=0.0,
-                            max_value=1000.0,
-                            step=5.0,
-                            key=f"adj_pct_{i}",
-                            help="100% = no change, 150% = 1.5x SIP, 70% = 0.7x SIP"
-                        )
-                    
-                    with col4:
-                        st.write("")  # Spacing
-                        if st.button("🗑️ Remove", key=f"remove_adj_{i}", use_container_width=True):
+            
+            if len(st.session_state.sip_adjustments) == 0:
+                st.info("No SIP adjustments added.")
+            else:
+                for i, adj in enumerate(st.session_state.sip_adjustments):
+                    with st.container():
+                        c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
+                        adj['start_date'] = c1.date_input(f"Start", value=adj['start_date'], key=f"s_adj_start_{i}")
+                        adj['end_date'] = c2.date_input(f"End", value=adj['end_date'], key=f"s_adj_end_{i}")
+                        adj['percentage'] = c3.number_input(f"% Multiplier", value=float(adj['percentage']), step=5.0, key=f"s_adj_pct_{i}")
+                        if c4.button("🗑️", key=f"del_s_adj_{i}"):
                             st.session_state.sip_adjustments.pop(i)
                             st.rerun()
 
@@ -179,7 +242,6 @@ def main():
 
         buckets_to_remove = []
         for i, bucket in enumerate(st.session_state.builder_buckets):
-            # Collapsed by default unless it's the last one (likely being edited)
             is_expanded = (i == len(st.session_state.builder_buckets) - 1)
             
             with st.expander(f"Bucket {i+1} ({bucket['percent']}%)", expanded=is_expanded):
@@ -225,10 +287,8 @@ def main():
             elif abs(total_percent - 100.0) > 0.01:
                 st.error(f"Total percentage must be 100%. Current total: {total_percent}%")
             else:
-                # Logic to convert builder to DataFrame
                 rows = []
                 row_id_counter = 1
-                
                 valid = True
                 for bucket in st.session_state.builder_buckets:
                     if not bucket['steps']:
@@ -236,149 +296,34 @@ def main():
                         valid = False
                         break
                     
-                    # Sort steps by years ascending (closest to goal first? No, we want logical flow)
-                    # We decided: Steps are "Start Year".
-                    # Step 1: Debt, 2 years. Means 2 years before end.
-                    # Step 2: Hybrid, 10 years. Means 10 years before end.
-                    # Flow: Core -> Hybrid (at 10) -> Debt (at 2) -> Goal (at 0).
-                    # So we process steps in ASCENDING order of years (smallest first).
-                    # Smallest year (e.g. 2) connects to Goal (0).
-                    # Next smallest (e.g. 10) connects to Previous (2).
-                    
-                    sorted_steps = sorted(bucket['steps'], key=lambda x: x['years'])
-                    
-                    # Ensure strictly increasing if desired, or at least distinct.
-                    # 0 years is valid? 0 years before maturity is maturity.
-                    # If step year is 0, it means it IS the goal? No.
-                    # It means it starts at 0 years before. But goal is at 0.
-                    # So duration is 0? That's useless.
-                    # Validation: Years should be > 0.
-                    
-                    previous_node_id = None
-                    last_start_year = 0
-                    
-                    # Create Goal Row first?
-                    # No, goal row is the sink.
-                    # In existing logic, 'inflow_from' points to source.
-                    # So we need Source ID.
-                    
-                    # Let's generate IDs for steps first.
-                    # But we need to link them.
-                    
-                    # Let's build the chain.
-                    # Chain: Core -> Step N -> ... -> Step 1 -> Goal
-                    
-                    # Step N is the one with LARGEST start year.
-                    # Step 1 is the one with SMALLEST start year.
-                    
-                    # Let's iterate reversed sorted steps (Largest to Smallest).
-                    reverse_sorted = sorted(bucket['steps'], key=lambda x: x['years'], reverse=True)
-                    
-                    current_source = 'core corpus'
-                    
-                    for k, step in enumerate(reverse_sorted):
-                        # Create row for this step
-                        step_row = {
-                            'id': row_id_counter,
-                            'place': step['instrument'],
-                            'years from inflow till end': step['years'],
-                            'years from outflow till end': 0 if k == len(reverse_sorted) - 1 else reverse_sorted[k+1]['years'], # Outflow to next step (which has smaller year) or 0 (Goal)
-                            'inflow_from': current_source,
-                            # outflow_to is ID of next step... wait.
-                            # The dataframe has 'outflow_to' but `process_chain` uses `inflow_from`.
-                            # `main.py` logic traces BACKWARDS from goal.
-                            # So Goal.inflow_from = Step1_ID.
-                            # Step1.inflow_from = Step2_ID.
-                            # StepN.inflow_from = 'core corpus'.
-                            
-                            # So I need the IDs of these steps.
-                        }
-                        # Wait, I can't know inflow_from if I haven't created the source yet?
-                        # No, if source is core corpus, I know it.
-                        # If source is previous step, I know its ID if I created it.
-                        
-                        # So iterate from Furthest (Core source) to Closest (Goal source).
-                        # Correct.
-                        pass # Placeholder logic check
-                    
-                    # Let's do it properly.
-                    # Sort steps Descending (High year to Low year).
-                    # Example: Hybrid (10), Debt (2).
-                    
-                    # Step A: Hybrid (10). Source: Core.
-                    # Step B: Debt (2). Source: Step A.
-                    # Goal. Source: Step B.
-                    
-                    chain_ids = []
-                    
                     sorted_desc = sorted(bucket['steps'], key=lambda x: x['years'], reverse=True)
-                    
-                    last_id = 'core corpus' # Start source
+                    chain_ids = []
+                    last_id = 'core corpus' 
                     
                     for step in sorted_desc:
                         current_id = row_id_counter
                         row_id_counter += 1
-                        
-                        # Calculate outflow year (next step's inflow year, or 0 if last)
-                        # Actually we don't strictly need 'outflow_to' or 'years from outflow' for logic?
-                        # main.py logic:
-                        # process_chain navigates via `inflow_from`.
-                        # It calculates `years = (outflow_date - inflow_date)`.
-                        # `outflow_date` is `current_row['inflow_date']` (i.e. the node that pulled from this source).
-                        # So `years from outflow till end` in the excel seems to be for documentation or validation, `main.py` line 29 calculates `outflow_date` but line 86 uses `current_row['inflow_date']` as the outflow date of the source.
-                        # Wait, line 86: `outflow_date = current_row['inflow_date']`.
-                        # `current_row` is the receiver. `source_row` is the provider.
-                        # Provider's outflow date IS receiver's inflow date.
-                        # So we just need to set up `inflow_from` links correctly.
-                        
-                        # However, for `years from outflow till end`, let's populate it for consistency.
-                        # If this is Step A (High Year), its outflow is Step B (Low Year).
-                        # If this is Step Last (Lowest Year), its outflow is Goal (0 Year).
-                        
-                        # But wait, `main.py` line 29: df['outflow_date'] = ... years from outflow till end.
-                        # Is `outflow_date` used?
-                        # Line 133: `if pd.notna(row['outflow_date']):` - used for calculation of growth/tax in INTERMEDIATE steps (not goal).
-                        # Yes! `process_chain` sets `inflow_amount` on source.
-                        # Later (line 119+), `df.iterrows()` calculates growth on non-goal rows using `outflow_date`.
-                        # So `years from outflow till end` IS CRITICAL.
-                        
-                        # So:
-                        # Step A (10): Outflow year = Step B's inflow year (2).
-                        # Step B (2): Outflow year = Goal's inflow year (0).
-                        
                         rows.append({
                             'id': current_id,
                             'place': step['instrument'],
                             'years from inflow till end': step['years'],
-                            'years from outflow till end': 0 if step == sorted_desc[-1] else 0, # To be filled?
-                            # 'years from outflow till end' needs to be the inflow year of the NEXT step in the chain (closer to goal).
+                            'years from outflow till end': 0, # Placeholder
                             'inflow_from': last_id,
-                            'outflow_to': 0, # Placeholder
-                            '% of goal value': bucket['percent'] # Optional, only needed for goal row
+                            'outflow_to': 0, 
+                            '% of goal value': bucket['percent']
                         })
                         chain_ids.append(current_id)
                         last_id = current_id
                     
-                    # Post-process to fix 'years from outflow' and 'outflow_to'
                     for k in range(len(chain_ids)):
                         curr_idx = len(rows) - len(chain_ids) + k
-                        # If not last step
                         if k < len(chain_ids) - 1:
-                            next_id = chain_ids[k+1]
-                            # Next step in list is the one Closest to goal (next in iteration was closer).
-                            # Wait, sorted_desc is Furthest -> Closest.
-                            # So chain_ids[0] is Furthest.
-                            # chain_ids[1] is Closer.
-                            # Step 0 flows to Step 1.
                             rows[curr_idx]['outflow_to'] = chain_ids[k+1]
                             rows[curr_idx]['years from outflow till end'] = rows[curr_idx+1]['years from inflow till end']
                         else:
-                            # Last step flows to Goal
-                            # Goal inflow year is 0.
-                            rows[curr_idx]['outflow_to'] = 'Goal' # placeholder logic
+                            rows[curr_idx]['outflow_to'] = 'Goal'
                             rows[curr_idx]['years from outflow till end'] = 0
                             
-                    # Create Goal Row
                     goal_id = row_id_counter
                     row_id_counter += 1
                     rows.append({
@@ -386,18 +331,16 @@ def main():
                         'place': 'goal',
                         'years from inflow till end': 0,
                         'years from outflow till end': pd.NA,
-                        'inflow_from': last_id, # The last step ID
+                        'inflow_from': last_id,
                         'outflow_to': pd.NA,
                         '% of goal value': bucket['percent']
                     })
                 
                 if valid:
-                    # Create DataFrame
                     df_custom = pd.DataFrame(rows)
-                    # df_custom.to_excel('Custom Glide Paths.xlsx', sheet_name=gp_name, index=False)
                     st.session_state.custom_glide_paths[gp_name] = df_custom
                     st.success(f"Created Glide Path: {gp_name}")
-                    st.session_state.builder_buckets = [] # Reset
+                    st.session_state.builder_buckets = []
                     st.rerun()
 
     # Section 2.5: Financial Goals
@@ -420,46 +363,35 @@ def main():
         st.info("No goals added yet. Click 'Add Goal' to get started.")
     else:
         for i, goal in enumerate(st.session_state.goals):
-            with st.expander(f"Goal {i+1}: {goal['name'] if goal['name'] else 'Unnamed'}", expanded=True):
+            # Calculate future value for display
+            goal_fv = logic.future_value(
+                goal['downpayment_present_value'], 
+                goal['rate_for_future_value'] / 100, 
+                pd.Timestamp(current_date), 
+                pd.Timestamp(goal['maturity_date'])
+            )
+            maturity_str = pd.Timestamp(goal['maturity_date']).strftime('%b %Y')
+            expander_label = f"Goal {i+1}: {goal['name'] if goal['name'] else 'Unnamed'} — FV: {logic.format_inr(goal_fv)} @ {maturity_str}"
+            
+            with st.expander(expander_label, expanded=True):
                 col1, col2, col3 = st.columns([2, 2, 1])
                 
                 with col1:
-                    goal['name'] = st.text_input(
-                        "Goal Name", 
-                        value=goal['name'], 
-                        key=f"goal_name_{i}",
-                        placeholder="e.g., Home, Child Education"
-                    )
-                    goal['downpayment_present_value'] = st.number_input(
-                        "Present Value (₹)", 
-                        value=goal['downpayment_present_value'], 
-                        step=100000,
-                        key=f"goal_pv_{i}"
-                    )
+                    goal['name'] = st.text_input(f"Goal Name {i}", value=goal['name'], key=f"goal_name_{i}", placeholder="e.g., Home")
+                    goal['downpayment_present_value'] = st.number_input(f"Present Value (₹) {i}", value=goal['downpayment_present_value'], step=100000, key=f"goal_pv_{i}")
                 
                 with col2:
                     gp_options = list(st.session_state.standard_glide_paths.keys()) + list(st.session_state.custom_glide_paths.keys())
                     current_type = goal['type'] if goal['type'] in gp_options else gp_options[0]
-                    
-                    goal['type'] = st.selectbox(
-                        "Goal Type", 
-                        options=gp_options,
-                        index=gp_options.index(current_type),
-                        key=f"goal_type_{i}"
-                    )
-                    goal['rate_for_future_value'] = st.number_input(
-                        "Inflation Rate (%)", 
-                        value=goal['rate_for_future_value'], 
-                        step=0.1,
-                        key=f"goal_rate_{i}"
-                    )
+                    goal['type'] = st.selectbox(f"Goal Type {i}", options=gp_options, index=gp_options.index(current_type), key=f"goal_type_{i}")
+                    goal['rate_for_future_value'] = st.number_input(f"Inflation (%) {i}", value=goal['rate_for_future_value'], step=0.1, key=f"goal_rate_{i}")
                 
                 with col3:
                     goal['maturity_date'] = st.date_input(
-                        "Maturity Date", 
+                        f"Maturity {i}", 
                         value=goal['maturity_date'],
                         min_value=pd.Timestamp(1900, 1, 1),
-                        max_value=pd.Timestamp(2200, 12, 31),
+                        max_value=pd.Timestamp(2150, 12, 31),
                         key=f"goal_date_{i}"
                     )
                     if st.button("🗑️ Remove", key=f"remove_goal_{i}", use_container_width=True):
@@ -468,17 +400,18 @@ def main():
 
     st.divider()
 
-    # Section 3: Effects on Cashflows
-    st.header("💰 Effects on Cashflows")
+    # Section 3: Effects on Cashflows (SIP Capacity Effects)
+    st.header("💰 Effects on SIP Capacity")
+    st.caption("Adjust your monthly SIP amount for loans or other temporary cashflow changes.")
 
     col1, col2 = st.columns([3, 1])
     with col2:
-        if st.button("➕ Add Cashflow Effect", use_container_width=True):
+        if st.button("➕ Add SIP Effect", use_container_width=True):
             st.session_state.effects.append({
                 'id': len(st.session_state.effects),
                 'type': 'Manual', # Default
                 'start_date': datetime(2030, 1, 1),
-                'end_date': datetime(2050, 1, 1),
+                'end_date': datetime(2250, 1, 1),
                 'monthly_amount': -30000,
                 'pv': 5000000,
                 'interest_rate': 8.5,
@@ -486,93 +419,38 @@ def main():
             })
             st.rerun()
 
-    if len(st.session_state.effects) == 0:
-        st.info("No cashflow effects added yet. Click 'Add Cashflow Effect' to get started.")
-    else:
+    if len(st.session_state.effects) > 0:
         for i, effect in enumerate(st.session_state.effects):
-            with st.expander(f"Cashflow Effect {i+1}", expanded=True):
-                # Ensure keys exist for backward compatibility
+            with st.expander(f"Effect {i+1}", expanded=True):
                 effect.setdefault('type', 'Manual')
-                
                 type_col, _ = st.columns([1, 3])
                 with type_col:
                     effect['type'] = st.selectbox("Type", ["Manual", "Loan EMI"], key=f"effect_type_{i}")
                 
                 if effect['type'] == "Manual":
                     col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
-                    
-                    with col1:
-                        effect['start_date'] = st.date_input(
-                            "Start Date", 
-                            value=effect['start_date'],
-                            min_value=pd.Timestamp(1900, 1, 1),
-                            max_value=pd.Timestamp(2200, 12, 31),
-                            key=f"effect_start_{i}"
-                        )
-                    
-                    with col2:
-                        effect['end_date'] = st.date_input(
-                            "End Date", 
-                            value=effect['end_date'],
-                            min_value=pd.Timestamp(1900, 1, 1),
-                            max_value=pd.Timestamp(2200, 12, 31),
-                            key=f"effect_end_{i}"
-                        )
-                    
-                    with col3:
-                        effect['monthly_amount'] = st.number_input(
-                            "Monthly Amount (₹)", 
-                            value=int(effect['monthly_amount']),
-                            step=1000,
-                            key=f"effect_amount_{i}",
-                            help="Use negative values for outflow"
-                        )
-                    
-                    with col4:
-                        st.write("")  # Spacing
-                        if st.button("🗑️ Remove", key=f"remove_effect_{i}", use_container_width=True):
+                    with col1: effect['start_date'] = st.date_input("Start", value=effect['start_date'], key=f"eff_s_{i}")
+                    with col2: effect['end_date'] = st.date_input("End", value=effect['end_date'], key=f"eff_e_{i}")
+                    with col3: effect['monthly_amount'] = st.number_input("Amount (₹)", value=int(effect['monthly_amount']), step=1000, key=f"eff_a_{i}")
+                    with col4: 
+                        if st.button("🗑️", key=f"del_eff_{i}"):
                             st.session_state.effects.pop(i)
                             st.rerun()
-                            
-                else: # Loan EMI
+                else: 
                     c1, c2, c3 = st.columns(3)
-                    with c1:
-                        effect.setdefault('pv', 5000000)
-                        effect['pv'] = st.number_input("Loan Amount (PV)", value=effect['pv'], step=100000, key=f"eff_pv_{i}")
-                    with c2:
-                        effect.setdefault('interest_rate', 8.5)
-                        effect['interest_rate'] = st.number_input("Loan Interest (%)", value=effect['interest_rate'], step=0.1, key=f"eff_int_{i}")
-                    with c3:
-                        effect.setdefault('inflation_rate', 6.0)
-                        effect['inflation_rate'] = st.number_input("Inflation Rate (%)", value=effect['inflation_rate'], step=0.1, key=f"eff_inf_{i}")
-                        
+                    with c1: effect['pv'] = st.number_input("Loan PV", value=effect.get('pv', 5000000), step=100000, key=f"lpv_{i}")
+                    with c2: effect['interest_rate'] = st.number_input("Interest %", value=effect.get('interest_rate', 8.5), step=0.1, key=f"lint_{i}")
+                    with c3: effect['inflation_rate'] = st.number_input("Inflation %", value=effect.get('inflation_rate', 6.0), step=0.1, key=f"linf_{i}")
                     c4, c5, c6 = st.columns([2, 2, 2])
-                    with c4:
-                        effect['start_date'] = st.date_input("Loan Start Date", value=effect['start_date'], key=f"eff_st_{i}")
-                    with c5:
-                        effect['end_date'] = st.date_input("Loan End Date", value=effect['end_date'], key=f"eff_end_{i}")
-                        
-                    # Calculate EMI
-                    current_date_ts = pd.Timestamp(st.session_state.get('current_date_input', datetime(2025, 12, 23)))
-                    # Need to access current_date from input section. It's properly in 'current_date' variable from line 25 if scope allows?
-                    # Streamlit reruns script top to bottom. `current_date` is defined in main() scope. We are inside main(). So yes.
+                    with c4: effect['start_date'] = st.date_input("Start", value=effect['start_date'], key=f"lst_{i}")
+                    with c5: effect['end_date'] = st.date_input("End", value=effect['end_date'], key=f"lend_{i}")
                     
-                    calculated_emi = calculate_emi(
-                        effect['pv'], 
-                        pd.Timestamp(effect['start_date']), 
-                        pd.Timestamp(effect['end_date']), 
-                        effect['interest_rate'], 
-                        effect['inflation_rate'], 
-                        pd.Timestamp(current_date)
-                    )
-                    
-                    # Store as negative monthly amount
+                    calculated_emi = calculate_emi(effect['pv'], pd.Timestamp(effect['start_date']), pd.Timestamp(effect['end_date']), effect['interest_rate'], effect['inflation_rate'], pd.Timestamp(current_date))
                     effect['monthly_amount'] = -calculated_emi
                     
                     with c6:
-                        st.metric("Calculated EMI", logic.format_inr(calculated_emi))
-                        
-                    if st.button("🗑️ Remove", key=f"remove_effect_emi_{i}", use_container_width=True):
+                        st.metric("EMI", logic.format_inr(calculated_emi))
+                    if st.button("🗑️", key=f"del_leff_{i}"):
                         st.session_state.effects.pop(i)
                         st.rerun()
 
@@ -595,18 +473,42 @@ def main():
 
         with col2:
             st.subheader("Core Corpus")
-            core_return = st.number_input("Return (%)", value=15.0, step=0.1, key="core_return")
+            core_return = st.number_input("Return (%)", value=12.0, step=0.1, key="core_return")
             core_tax = st.number_input("Tax (%)", value=12.5, step=0.1, key="core_tax")
     
-    # Goal return and tax are always 0 (not shown to user)
     goal_return = 0.0
     goal_tax = 0.0
 
     st.divider()
 
     # Generate Output Button
-    if st.button("🚀 Show Simulation Results", type="primary", use_container_width=True):
+    if st.button("🚀 Find Earliest Retirement Date", type="primary", use_container_width=True):
         
+        # Create input_variables dictionary
+        # Prepare Expense Streams Data
+        mapped_expense_streams = []
+        for s in st.session_state.expense_streams:
+            adjs = []
+            for a in s['adjustments']:
+                entry = {
+                    'start_date': pd.Timestamp(a['start_date']),
+                    'end_date': pd.Timestamp(a['end_date'])
+                }
+                if a.get('type') == 'Fixed Amount':
+                    entry['amount'] = float(a['value'])
+                else:
+                    entry['percentage'] = float(a['value'])
+                adjs.append(entry)
+                
+            mapped_expense_streams.append({
+                'name': s['name'],
+                'amount': int(s['amount']),
+                'frequency': int(s['frequency']),
+                'inflation': float(s['inflation']),
+                'post_retirement_change': float(s['post_retirement_change']),
+                'adjustments': adjs
+            })
+
         # Create input_variables dictionary
         input_variables = {
             'current_date': pd.Timestamp(current_date),
@@ -617,13 +519,10 @@ def main():
             'stepup_date_month': stepup_month,
             'stepup_date_day': stepup_day,
             'sip_adjustments': [
-                {
-                    'start_date': pd.Timestamp(adj['start_date']),
-                    'end_date': pd.Timestamp(adj['end_date']),
-                    'percentage': float(adj['percentage'])
-                }
+                {'start_date': pd.Timestamp(adj['start_date']), 'end_date': pd.Timestamp(adj['end_date']), 'percentage': float(adj['percentage'])}
                 for adj in st.session_state.sip_adjustments
             ],
+            'expense_streams': mapped_expense_streams,
             'goals': [
                 {
                     'name': goal['name'],
@@ -635,16 +534,11 @@ def main():
                 for goal in st.session_state.goals
             ],
             'effects_on_cashflows': [
-                {
-                    'start_date': pd.Timestamp(effect['start_date']),
-                    'end_date': pd.Timestamp(effect['end_date']),
-                    'monthly_amount': int(effect['monthly_amount'])
-                }
+                {'start_date': pd.Timestamp(effect['start_date']), 'end_date': pd.Timestamp(effect['end_date']), 'monthly_amount': int(effect['monthly_amount'])}
                 for effect in st.session_state.effects
             ]
         }
         
-        # Create instrument_params dictionary (convert percentages to decimals)
         instrument_params = {
             'hybrid': {'return': hybrid_return / 100, 'tax': hybrid_tax / 100},
             'debt': {'return': debt_return / 100, 'tax': debt_tax / 100},
@@ -652,79 +546,197 @@ def main():
             'core_corpus': {'return': core_return / 100, 'tax': core_tax / 100}
         }
         
-        # Combine glide paths
         all_glide_paths = st.session_state.standard_glide_paths.copy()
         all_glide_paths.update(st.session_state.custom_glide_paths)
-        
-        # Run simulation
-        result = logic.run_simulation(input_variables, instrument_params, glide_paths=all_glide_paths)
-        
-        if result:
-            if result['status'] == 'error':
-                st.error(result['message'])
-                if 'sip_df' in result['data']:
-                    st.subheader('Please look at the adjustments in cashflows')
-                    st.dataframe(result['data']['sip_df'])
+
+        with st.spinner("Simulating... This may take a moment."):
+            result = logic.find_retirement_date(input_variables, instrument_params, all_glide_paths)
             
-            elif result['status'] in ['success', 'failure']:
-                data = result['data']
-                success_metrics = data['success_metrics']
-                daily_corpus_value_df = data['daily_corpus_value_df']
-                final_trans_df = data['final_trans_df']
-                goal_dfs = data['goal_dfs']
-                last_goal_date = data['last_goal_date']
+        if result:
+            ret_month, ret_year = result
+            retirement_date = pd.Timestamp(year=ret_year, month=ret_month, day=1)
+            
+            # Calculate Age at Retirement
+            # Simplistic age calc: Current Age + Years Passed
+            years_passed = (retirement_date - pd.Timestamp(current_date)).days / 365.25
+            retirement_age = current_age + years_passed
+            
+            st.success(f"🎉 You can retire on {retirement_date.strftime('%B %Y')}!")
+            st.metric("Retirement Age", f"{retirement_age:.1f} Years")
+            
+            # Rerun simulation with found date to get details (moved up to access comprehensive_df for summary)
+            success, final_trans_df, _, expense_movements_df, goal_dfs, comprehensive_df = logic.run_simulation(input_variables, retirement_date, instrument_params, all_glide_paths)
+            
+            if success:
+                # --- Retirement Summary Section ---
+                st.subheader("💰 Financial Summary at Retirement")
+                st.caption(f"Snapshot of your wealth distribution on {retirement_date.strftime('%B %Y')}")
                 
-                if result['status'] == 'success':
-                    st.success('All goals met Successfully')
+                # Find the row closest to retirement date in comprehensive_df
+                comprehensive_df['Date'] = pd.to_datetime(comprehensive_df['Date'])
+                ret_data = comprehensive_df[comprehensive_df['Date'] >= retirement_date].head(1)
+                
+                if not ret_data.empty:
+                    ret_row = ret_data.iloc[0]
                     
-                    st.header(
-                        f"Corpus on {last_goal_date.strftime('%d-%b-%Y')} "
-                        f"will be {logic.format_inr(daily_corpus_value_df['current_value'].iloc[-1])}"
-                    )
+                    # Core Corpus Value
+                    core_val = ret_row.get('Core Corpus Value', 0)
+                    debt_pool_val = ret_row.get('Expense Debt Pool Value', 0)
+                    hybrid_pool_val = ret_row.get('Expense Hybrid Pool Value', 0)
                     
-                    st.subheader("Daily Corpus Value")
-                    st.line_chart(daily_corpus_value_df, x='Date', y='current_value')
-
+                    # Goal-specific columns
+                    goal_totals = {'debt': 0, 'hybrid': 0}
+                    goal_details = []
+                    for goal_info in input_variables['goals']:
+                        gname = goal_info['name']
+                        g_debt = ret_row.get(f'{gname} Debt Value', 0)
+                        g_hybrid = ret_row.get(f'{gname} Hybrid Value', 0)
+                        goal_totals['debt'] += g_debt
+                        goal_totals['hybrid'] += g_hybrid
+                        if g_debt > 0 or g_hybrid > 0:
+                            goal_details.append({'Goal': gname, 'Debt': g_debt, 'Hybrid': g_hybrid, 'Total': g_debt + g_hybrid})
+                    
+                    # Total Wealth
+                    total_wealth = core_val + debt_pool_val + hybrid_pool_val + goal_totals['debt'] + goal_totals['hybrid']
+                    
+                    # Display Summary
+                    col_a, col_b, col_c = st.columns(3)
+                    col_a.metric("Core Corpus", logic.format_inr(core_val))
+                    col_b.metric("Expense Debt Pool", logic.format_inr(debt_pool_val))
+                    col_c.metric("Expense Hybrid Pool", logic.format_inr(hybrid_pool_val))
+                    
+                    if goal_details:
+                        st.markdown("**Goal Pools at Retirement:**")
+                        goal_summary_df = pd.DataFrame(goal_details)
+                        # Format for display
+                        goal_summary_df['Debt'] = goal_summary_df['Debt'].apply(logic.format_inr)
+                        goal_summary_df['Hybrid'] = goal_summary_df['Hybrid'].apply(logic.format_inr)
+                        goal_summary_df['Total'] = goal_summary_df['Total'].apply(logic.format_inr)
+                        st.dataframe(goal_summary_df, hide_index=True, use_container_width=True)
+                    else:
+                        st.info("No goal-specific pools active at retirement date.")
+                    
                     st.divider()
+                    st.metric("💎 Total Wealth at Retirement", logic.format_inr(total_wealth))
+                    st.divider()
+            
+                # Logic to generate daily value for chart
+                # run_simulation returns (success, final_trans_df)
+                # We need daily values. logic.run_simulation doesn't return full dict anymore in main_v2? 
+                
+                # 1. Generate NAV - cap at 100 years from current date for consistent display
+                simulation_end_date = pd.Timestamp(current_date) + pd.DateOffset(years=100)
+                nav_df = logic.generate_pseudo_nav(input_variables['current_date'], simulation_end_date, instrument_params['core_corpus']['return'])
+                
+                # 2. Daily Value
+                daily_value_df = logic.calculate_daily_value(final_trans_df, nav_df)
+                
+                # 3. Cap the chart data at simulation end date to avoid misleading uptick after expenses stop
+                daily_value_df = daily_value_df[daily_value_df['Date'] <= simulation_end_date]
+                
+                st.subheader("Projected Core Corpus (100 Years)")
+                st.line_chart(daily_value_df, x='Date', y='current_value')
 
-                    # Create zip file in memory
-                    zip_buffer = io.BytesIO()
-                    with zipfile.ZipFile(zip_buffer, 'w') as zf:
-                        # Helper to add df to zip
-                        def add_df_to_zip(df, name):
-                            csv_data = df.to_csv(index=False).encode('utf-8')
-                            zf.writestr(f"{name}.csv", csv_data)
-
-                        add_df_to_zip(daily_corpus_value_df, "daily_corpus_value")
-                        add_df_to_zip(final_trans_df, "final_trans_df")
-                        add_df_to_zip(data.get('consolidated_trans_df', pd.DataFrame()), "consolidated_trans_df")
-                        add_df_to_zip(data.get('nav_df', pd.DataFrame()), "nav_df")
-                        add_df_to_zip(data.get('sip_df', pd.DataFrame()), "sip_df")
-                        add_df_to_zip(data.get('sip_trans_df', pd.DataFrame()), "sip_trans_df")
-                        add_df_to_zip(data.get('withdrawls_df', pd.DataFrame()), "withdrawls_df")
-                        
-                        for goal_name, goal_df in goal_dfs.items():
-                             add_df_to_zip(goal_df, f"goal_{goal_name}")
-                    
-                    st.download_button(
-                        label="Download All Data (ZIP)",
-                        data=zip_buffer.getvalue(),
-                        file_name="simulation_results.zip",
-                        mime="application/zip"
+                with st.expander("Show Daily Core Corpus Data"):
+                    st.dataframe(daily_value_df)
+                
+                
+                st.subheader("Goals Status")
+                for goal in input_variables['goals']:
+                    goal_fv = logic.future_value(
+                        goal['downpayment_present_value'],
+                        goal['rate_for_future_value%'] / 100,
+                        input_variables['current_date'],
+                        goal['maturity_date']
                     )
+                    maturity_str = goal['maturity_date'].strftime('%b %Y')
+                    st.success(f"✅ {goal['name']} — FV: {logic.format_inr(goal_fv)} @ {maturity_str} — Fully Funded")
+                    
+                st.info("Since the simulation succeeded, all goals are fully funded according to their glide paths.")
+                
+                # Display Dataframes requested by user
+                st.divider()
+                st.header("📋 Simulation Details")
+                
+                st.subheader("Consolidated Core Transactions")
+                st.dataframe(final_trans_df)
+                
+                st.subheader("Expense Pool Movements (Debt & Hybrid)")
+                st.dataframe(expense_movements_df)
+                
+                st.subheader("Comprehensive Month-by-Month View")
+                st.caption("Includes Core Corpus, Expense Pools, Goal Pools, Net SIP, and Net Expenses.")
+                st.dataframe(comprehensive_df)
 
+                st.subheader("Goal Specific Details")
+                for goal_name, goal_df in goal_dfs.items():
+                    # Find matching goal to compute FV
+                    matching_goal = next((g for g in input_variables['goals'] if g['name'] == goal_name), None)
+                    if matching_goal:
+                        goal_fv = logic.future_value(
+                            matching_goal['downpayment_present_value'],
+                            matching_goal['rate_for_future_value%'] / 100,
+                            input_variables['current_date'],
+                            matching_goal['maturity_date']
+                        )
+                        maturity_str = matching_goal['maturity_date'].strftime('%b %Y')
+                        expander_label = f"Goal: {goal_name} — FV: {logic.format_inr(goal_fv)} @ {maturity_str}"
+                    else:
+                        expander_label = f"Goal: {goal_name}"
+                        
+                    with st.expander(expander_label):
+                        st.dataframe(goal_df)
+                
+            else:
+                st.error("Simulation failed upon re-verification. Please report this bug.")
+                
+        else:
+            st.error("Cannot retire within the next 100 years with the current configuration.")
+            
+            # Diagnose Failure
+            st.subheader("Diagnosis: Why can't you retire?")
+            with st.spinner("Analyzing failure..."):
+                # Run simulation assuming retirement postponed by 100 years
+                # This ensures we see if goals are achievable even with max SIP accumulation and zero expenses for 100 years
+                diag_retirement_date = pd.Timestamp(current_date) + pd.DateOffset(years=100)
+                
+                sim_msg = f"Simulating scenario where retirement is postponed to **{diag_retirement_date.strftime('%B %Y')}** (100 years later) to maximize savings and delay expenses."
+                st.info(sim_msg)
+                
+                success, _, failure_details, _, _, _ = logic.run_simulation(input_variables, diag_retirement_date, instrument_params, all_glide_paths)
+                
+                if not success and failure_details:
+                    fail_date = failure_details['date']
+                    fail_amount = failure_details['amount']
+                    fail_desc = failure_details['description']
+                    
+                    st.warning(f"Projected Corpus depletion date: {fail_date.strftime('%B %Y')}")
+                    
+                    st.markdown(f"""
+                    ### First Failure Event
+                    - **Date**: {fail_date.strftime('%d %B %Y')}
+                    - **Reason**: {fail_desc}
+                    - **Shortfall Amount**: {logic.format_inr(fail_amount)}
+                    """)
+                    
+                    if "Monthly Expense" in fail_desc:
+                        st.write("Your monthly expenses are draining the corpus. Consider reducing expenses or increasing SIP.")
+                    else:
+                        st.write("A specific goal or transfer caused the shortfall. Consider adjusting this goal's value or date.")
                 else:
-                    st.error('Goals could not be met')
-                    st.header(f"Cashflows started going negative on {success_metrics['simulation_broke_date'].strftime('%d-%b-%Y')}")
+                     st.write("Corpus seems to survive with immediate retirement? This is unexpected if 'find_retirement_date' failed. It might be due to 100-year projection limit.")
 
-
-                # st.subheader('Cashflows in core corpus:')
-                # st.dataframe(final_trans_df)
-
-                # st.subheader('Goal wise cashflows:')
-                # for goal_name, goal_df in goal_dfs.items():
-                #     st.write(goal_name)
-                #     st.dataframe(goal_df)
+        st.divider()
+        with st.expander("View Input Configuration"):
+            def make_serializable(obj):
+                if isinstance(obj, (pd.Timestamp, date, datetime)):
+                    return obj.strftime('%Y-%m-%d')
+                if isinstance(obj, dict):
+                    return {k: make_serializable(v) for k, v in obj.items()}
+                if isinstance(obj, list):
+                    return [make_serializable(i) for i in obj]
+                return obj
+            st.json(make_serializable(input_variables))
 
 if __name__ == "__main__":
     main()
