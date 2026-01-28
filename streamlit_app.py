@@ -8,6 +8,46 @@ from dateutil.relativedelta import relativedelta
 from datetime import date
 
 
+def parse_date(date_str, default=None):
+    """Parse date string in dd/mm/yyyy format. Returns default if parsing fails."""
+    if not date_str:
+        return default
+    try:
+        return datetime.strptime(date_str.strip(), "%d/%m/%Y").date()
+    except ValueError:
+        return default
+
+
+def format_date_for_input(d):
+    """Format a date object to dd/mm/yyyy string for display in text input."""
+    if isinstance(d, (date, datetime, pd.Timestamp)):
+        if isinstance(d, pd.Timestamp):
+            d = d.date()
+        elif isinstance(d, datetime):
+            d = d.date()
+        return d.strftime("%d/%m/%Y")
+    return ""
+
+
+def date_text_input(label, value, key, help_text=None):
+    """
+    Replacement for st.date_input that uses text input.
+    Returns a date object or None if invalid.
+    """
+    default_str = format_date_for_input(value)
+    placeholder = "dd/mm/yyyy"
+    
+    if help_text:
+        full_help = f"{help_text} (Format: dd/mm/yyyy)"
+    else:
+        full_help = "Format: dd/mm/yyyy"
+    
+    text_val = st.text_input(label, value=default_str, key=key, help=full_help, placeholder=placeholder)
+    
+    parsed = parse_date(text_val, value)
+    return parsed
+
+
 def calculate_emi(pv, start_date, end_date, interest_rate, inflation_rate, current_date):
     # Calculate years to start (from current date to start date)
     years_to_start = (start_date - current_date).days / 365.25
@@ -66,7 +106,7 @@ def main():
     col1, col2 = st.columns(2)
 
     with col1:
-        current_date = st.date_input("Current Date", value=date.today())
+        current_date = date_text_input("Current Date", value=date.today(), key="current_date")
         current_corpus = st.number_input("Current Corpus (₹)", value=10000000, step=100000)
         yearly_sip_step_up = st.number_input("Yearly SIP Step-up (%)", value=10.0, step=0.1)
 
@@ -140,9 +180,12 @@ def main():
                     ac1, ac2, ac3, ac4, ac5 = st.columns([2, 2, 2, 2, 1])
                     adj.setdefault('type', 'Multiplier')
                     
-                    with ac1: adj['start_date'] = st.date_input("Start", value=adj['start_date'], key=f"s_{i}_adj_s_{j}", label_visibility="collapsed")
-                    with ac2: adj['end_date'] = st.date_input("End", value=adj['end_date'], key=f"s_{i}_adj_e_{j}", label_visibility="collapsed")
-                    with ac3: adj['type'] = st.selectbox("Type", ["Multiplier", "Fixed Amount"], index=0 if adj['type']=='Multiplier' else 1, key=f"s_{i}_adj_t_{j}", label_visibility="collapsed")
+                    with ac1: 
+                        adj['start_date'] = date_text_input("Start", value=adj['start_date'], key=f"s_{i}_adj_s_{j}")
+                    with ac2: 
+                        adj['end_date'] = date_text_input("End", value=adj['end_date'], key=f"s_{i}_adj_e_{j}")
+                    with ac3: 
+                        adj['type'] = st.selectbox("Type", ["Multiplier", "Fixed Amount"], index=0 if adj['type']=='Multiplier' else 1, key=f"s_{i}_adj_t_{j}", label_visibility="collapsed")
                     with ac4: 
                         if adj['type'] == 'Multiplier':
                             # Show Percentage Input
@@ -214,9 +257,12 @@ def main():
                 for i, adj in enumerate(st.session_state.sip_adjustments):
                     with st.container():
                         c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
-                        adj['start_date'] = c1.date_input(f"Start", value=adj['start_date'], key=f"s_adj_start_{i}")
-                        adj['end_date'] = c2.date_input(f"End", value=adj['end_date'], key=f"s_adj_end_{i}")
-                        adj['percentage'] = c3.number_input(f"% Multiplier", value=float(adj['percentage']), step=5.0, key=f"s_adj_pct_{i}")
+                        with c1:
+                            adj['start_date'] = date_text_input("Start", value=adj['start_date'], key=f"s_adj_start_{i}")
+                        with c2:
+                            adj['end_date'] = date_text_input("End", value=adj['end_date'], key=f"s_adj_end_{i}")
+                        with c3:
+                            adj['percentage'] = st.number_input(f"% Multiplier", value=float(adj['percentage']), step=5.0, key=f"s_adj_pct_{i}")
                         if c4.button("🗑️", key=f"del_s_adj_{i}"):
                             st.session_state.sip_adjustments.pop(i)
                             st.rerun()
@@ -387,11 +433,9 @@ def main():
                     goal['rate_for_future_value'] = st.number_input(f"Inflation (%) {i}", value=goal['rate_for_future_value'], step=0.1, key=f"goal_rate_{i}")
                 
                 with col3:
-                    goal['maturity_date'] = st.date_input(
+                    goal['maturity_date'] = date_text_input(
                         f"Maturity {i}", 
                         value=goal['maturity_date'],
-                        min_value=pd.Timestamp(1900, 1, 1),
-                        max_value=pd.Timestamp(2150, 12, 31),
                         key=f"goal_date_{i}"
                     )
                     if st.button("🗑️ Remove", key=f"remove_goal_{i}", use_container_width=True):
@@ -429,9 +473,12 @@ def main():
                 
                 if effect['type'] == "Manual":
                     col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
-                    with col1: effect['start_date'] = st.date_input("Start", value=effect['start_date'], key=f"eff_s_{i}")
-                    with col2: effect['end_date'] = st.date_input("End", value=effect['end_date'], key=f"eff_e_{i}")
-                    with col3: effect['monthly_amount'] = st.number_input("Amount (₹)", value=int(effect['monthly_amount']), step=1000, key=f"eff_a_{i}")
+                    with col1: 
+                        effect['start_date'] = date_text_input("Start", value=effect['start_date'], key=f"eff_s_{i}")
+                    with col2: 
+                        effect['end_date'] = date_text_input("End", value=effect['end_date'], key=f"eff_e_{i}")
+                    with col3: 
+                        effect['monthly_amount'] = st.number_input("Amount (₹)", value=int(effect['monthly_amount']), step=1000, key=f"eff_a_{i}")
                     with col4: 
                         if st.button("🗑️", key=f"del_eff_{i}"):
                             st.session_state.effects.pop(i)
@@ -442,8 +489,10 @@ def main():
                     with c2: effect['interest_rate'] = st.number_input("Interest %", value=effect.get('interest_rate', 8.5), step=0.1, key=f"lint_{i}")
                     with c3: effect['inflation_rate'] = st.number_input("Inflation %", value=effect.get('inflation_rate', 6.0), step=0.1, key=f"linf_{i}")
                     c4, c5, c6 = st.columns([2, 2, 2])
-                    with c4: effect['start_date'] = st.date_input("Start", value=effect['start_date'], key=f"lst_{i}")
-                    with c5: effect['end_date'] = st.date_input("End", value=effect['end_date'], key=f"lend_{i}")
+                    with c4: 
+                        effect['start_date'] = date_text_input("Start", value=effect['start_date'], key=f"lst_{i}")
+                    with c5: 
+                        effect['end_date'] = date_text_input("End", value=effect['end_date'], key=f"lend_{i}")
                     
                     calculated_emi = calculate_emi(effect['pv'], pd.Timestamp(effect['start_date']), pd.Timestamp(effect['end_date']), effect['interest_rate'], effect['inflation_rate'], pd.Timestamp(current_date))
                     effect['monthly_amount'] = -calculated_emi
