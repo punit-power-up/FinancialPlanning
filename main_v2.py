@@ -415,10 +415,18 @@ def calculate_sip_cashflows(input_variables, last_goal_date, retirement_date):
         end_date = effect['end_date']
         # Cap end_date at retirement for cashflow effects (salary related)
         effective_end_date = min(end_date, retirement_date)
-        
+        inflation_rate = effect.get('inflation_rate', 0.0) / 100.0
+
         if start_date < effective_end_date:
             mask = (df['Date'] >= start_date) & (df['Date'] < effective_end_date) # Strictly less than retirement date
-            df.loc[mask, 'adjustment amount'] += effect['monthly_amount']
+            if inflation_rate != 0:
+                # Amount is present value relative to current_date, adjust for inflation
+                for idx in df[mask].index:
+                    years_elapsed = (df.loc[idx, 'Date'] - current_date).days / 365.25
+                    adjusted_amount = effect['monthly_amount'] * ((1 + inflation_rate) ** years_elapsed)
+                    df.loc[idx, 'adjustment amount'] += adjusted_amount
+            else:
+                df.loc[mask, 'adjustment amount'] += effect['monthly_amount']
     
     df['net sip amount'] = df['SIP amount'] + df['adjustment amount']
     return df
