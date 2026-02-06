@@ -472,14 +472,16 @@ def main():
                     effect['type'] = st.selectbox("Type", ["Manual", "Loan EMI"], key=f"effect_type_{i}")
                 
                 if effect['type'] == "Manual":
-                    col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
-                    with col1: 
+                    col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 1])
+                    with col1:
                         effect['start_date'] = date_text_input("Start", value=effect['start_date'], key=f"eff_s_{i}")
-                    with col2: 
+                    with col2:
                         effect['end_date'] = date_text_input("End", value=effect['end_date'], key=f"eff_e_{i}")
-                    with col3: 
-                        effect['monthly_amount'] = st.number_input("Amount (₹)", value=int(effect['monthly_amount']), step=1000, key=f"eff_a_{i}")
-                    with col4: 
+                    with col3:
+                        effect['monthly_amount'] = st.number_input("Amount (₹) PV", value=int(effect['monthly_amount']), step=1000, key=f"eff_a_{i}", help="Present Value - will be adjusted for inflation")
+                    with col4:
+                        effect['inflation_rate'] = st.number_input("Inflation (%)", value=float(effect.get('inflation_rate', 6.0)), step=0.1, key=f"eff_inf_{i}")
+                    with col5:
                         if st.button("🗑️", key=f"del_eff_{i}"):
                             st.session_state.effects.pop(i)
                             st.rerun()
@@ -583,7 +585,12 @@ def main():
                 for goal in st.session_state.goals
             ],
             'effects_on_cashflows': [
-                {'start_date': pd.Timestamp(effect['start_date']), 'end_date': pd.Timestamp(effect['end_date']), 'monthly_amount': int(effect['monthly_amount'])}
+                {
+                    'start_date': pd.Timestamp(effect['start_date']),
+                    'end_date': pd.Timestamp(effect['end_date']),
+                    'monthly_amount': int(effect['monthly_amount']),
+                    'inflation_rate': float(effect.get('inflation_rate', 0.0))
+                }
                 for effect in st.session_state.effects
             ]
         }
