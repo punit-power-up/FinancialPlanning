@@ -413,12 +413,12 @@ def calculate_sip_cashflows(input_variables, last_goal_date, retirement_date):
     for effect in effects_on_cashflows:
         start_date = effect['start_date']
         end_date = effect['end_date']
-        # Cap end_date at retirement for cashflow effects (salary related)
+        # Cap end_date at retirement for cashflow effects
         effective_end_date = min(end_date, retirement_date)
         inflation_rate = effect.get('inflation_rate', 0.0) / 100.0
 
         if start_date < effective_end_date:
-            mask = (df['Date'] >= start_date) & (df['Date'] < effective_end_date) # Strictly less than retirement date
+            mask = (df['Date'] >= start_date) & (df['Date'] < effective_end_date)
             if inflation_rate != 0:
                 # Amount is present value relative to current_date, adjust for inflation
                 for idx in df[mask].index:
@@ -828,7 +828,14 @@ def run_simulation(config, retirement_date, instrument_params, glide_paths=None)
     # core_replenishments_df has columns: Date, Amount, Description
     
     all_withdrawals = pd.concat([withdrawals_from_goals, core_replenishments_df], ignore_index=True)
-    
+
+    # Negative net SIP amounts (effects exceeding SIP) become withdrawals from core corpus
+    negative_sip = sip_df[sip_df['net sip amount'] < 0][['Date', 'net sip amount']].copy()
+    if not negative_sip.empty:
+        negative_sip['Amount'] = negative_sip['net sip amount'].abs()
+        negative_sip['Description'] = 'Negative SIP Effect'
+        all_withdrawals = pd.concat([all_withdrawals, negative_sip[['Date', 'Amount', 'Description']]], ignore_index=True)
+
     # 8. Run Transaction Simulation for Core Corpus
     sip_trans_df = create_sip_trans(nav_df, sip_df, config, retirement_date)
     final_trans_df, success, failure_details = add_withdrawls_to_trans(sip_trans_df, all_withdrawals, nav_df, instrument_params)
